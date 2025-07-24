@@ -1,66 +1,118 @@
 # Copyright (c) 2025 Kirk Lin
 # SPDX-License-Identifier: MIT
 
+import logging
+from InquirerPy import inquirer
+from InquirerPy.base.control import Choice
 from langgraph.graph import StateGraph, END, START
 from .state import AgentState
+from src.observer import observe
+from src.context_processor import process_context
+from src.agents.agents import (
+    create_event_aggregator_node,
+    create_strategist_node,
+    create_executor_agent,
+)
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # Node Functions (Placeholders)
 # ==============================================================================
 
-def observer_node(state: AgentState) -> AgentState:
-    print("---OBSERVER---")
-    # In a real implementation, this would monitor data sources
-    # For now, we'll simulate a file change event
-    state['raw_event'] = {"type": "file_change", "path": "./example.py"}
-    return state
-
-def context_processor_node(state: AgentState) -> AgentState:
-    print("---CONTEXT PROCESSOR---")
-    # Process the raw event into structured context
-    state['processed_context'] = {"code_snippet": "def hello():\n  print('world')"}
-    return state
-
-def event_aggregator_node(state: AgentState) -> AgentState:
-    print("---EVENT AGGREGATOR---")
-    # Decide if the event is significant
-    state['is_significant_event'] = True  # Simulate a significant event
-    return state
-
-def strategist_node(state: AgentState) -> AgentState:
-    print("---STRATEGIST---")
-    # Generate intent candidates
-    state['intent_candidates'] = ["Refactor the code", "Add documentation", "Run tests"]
-    return state
-
 def human_feedback_node(state: AgentState) -> AgentState:
-    print("---HUMAN FEEDBACK---")
-    # Simulate user selecting a task
-    state['selected_task'] = state['intent_candidates'][0]
+    logger.info("Awaiting human feedback...")
+    candidates = state.get('intent_candidates')
+    if not candidates:
+        logger.warning("No candidates to choose from.")
+        return state
+        
+    # In a real UI, this would be a clickable list.
+    # We simulate it with a command-line prompter.
+    selected_task = inquirer.select(
+        message="Please select a task to execute:",
+        choices=[Choice(value=c, name=c) for c in candidates]
+    ).execute()
+    
+    state['selected_task'] = selected_task
     return state
 
 def task_orchestrator_node(state: AgentState) -> AgentState:
-    print("---TASK ORCHESTRATOR---")
-    # Only initialize the approved_tasks list if it's the first time or empty.
-    if not state.get('approved_tasks'):
-        if state.get('selected_task'):
-            state['approved_tasks'] = [state['selected_task']]
-            # Clear selected_task after it has been moved to the queue
-            state['selected_task'] = None
+    logger.info("Orchestrating task...")
+    
+    # Initialize approved_tasks if it doesn't exist
+    if 'approved_tasks' not in state:
+        state['approved_tasks'] = []
+
+    # This node is entered from two places:
+    # 1. From human_feedback: a new task is selected and needs to be added to the queue.
+    # 2. From executor: a task has finished, and we need to pick the next one.
+    
+    # If selected_task has a value, it's a new task from the user.
+    # Add it to the end of the queue.
+    if state.get('selected_task'):
+        logger.debug(f"Adding new task to queue: {state['selected_task']}")
+        state['approved_tasks'].append(state['selected_task'])
+    
+    # Now, figure out what the next task is.
+    if state['approved_tasks']:
+        # Pop the next task from the front of the queue
+        next_task = state['approved_tasks'].pop(0)
+        state['selected_task'] = next_task
+        logger.debug(f"Next task to execute: {next_task}")
+        logger.debug(f"Remaining tasks in queue: {state['approved_tasks']}")
+    else:
+        # No more tasks to run
+        state['selected_task'] = None
+        logger.debug("Task queue is empty.")
+        
     return state
 
 def executor_node(state: AgentState) -> AgentState:
-    print("---EXECUTOR---")
-    # Simulate task execution
-    task = state['approved_tasks'].pop(0)
-    state['task_result'] = f"Successfully executed: {task}"
+    task = state.get('selected_task')
+    logger.info(f"Executing task: {task}")
+    
+    executor = create_executor_agent()
+    result_state = executor.invoke(state)
+    
+    # The result of the ReAct agent is in the 'messages' of the returned state
+    last_message = result_state.get('messages', [])[-1]
+    
+    # Update our main state with the new messages from the executor
+    state['messages'] = result_state.get('messages', [])
+    state['task_result'] = last_message.content
+    
+    logger.debug(f"Task '{task}' executed. Result: {last_message.content}")
+    
+    # Clear the selected task, so we don't re-add it to the queue
+    state['selected_task'] = None
+    
     return state
 
 def final_review_node(state: AgentState) -> AgentState:
-    print("---FINAL REVIEW---")
-    # Simulate user accepting the result
-    state['final_feedback'] = "accept"
-    print(state['task_result'])
+    logger.info("Awaiting final review...")
+    
+    # The last message from the executor is the result.
+    final_result = state.get('messages', [])[-1].content
+    logger.info(f"\n✅ Final Result:\n{final_result}\n")
+    
+    # Ask for feedback
+    feedback_action = inquirer.select(
+        message="How do you want to proceed?",
+        choices=[
+            Choice(value="accept", name="Accept and Finish"),
+            Choice(value="needs_modification", name="Request Modification"),
+        ]
+    ).execute()
+    
+    if feedback_action == "needs_modification":
+        modification_request = inquirer.text(
+            message="Please describe the required modifications:"
+        ).execute()
+        state['final_feedback'] = modification_request
+    else:
+        state['final_feedback'] = "accept"
+        
     return state
 
 # ==============================================================================
@@ -80,7 +132,7 @@ def should_continue_execution(state: AgentState) -> str:
     """
     Determines if there are more tasks to execute.
     """
-    if state.get('approved_tasks'):
+    if state.get('selected_task'):
         return "executor"
     else:
         return "final_review"
@@ -89,7 +141,8 @@ def should_refine_or_end(state: AgentState) -> str:
     """
     Determines whether to refine the strategy or end the flow based on feedback.
     """
-    if state.get('final_feedback') == "needs_modification":
+    if state.get('final_feedback') != "accept":
+        # Any feedback other than "accept" will trigger a refinement
         return "strategist"
     else:
         return END
@@ -103,10 +156,10 @@ def build_graph():
     builder = StateGraph(AgentState)
 
     # --- Add Nodes ---
-    builder.add_node("observer", observer_node)
-    builder.add_node("context_processor", context_processor_node)
-    builder.add_node("event_aggregator", event_aggregator_node)
-    builder.add_node("strategist", strategist_node)
+    builder.add_node("observer", observe)
+    builder.add_node("context_processor", process_context)
+    builder.add_node("event_aggregator", create_event_aggregator_node())
+    builder.add_node("strategist", create_strategist_node())
     builder.add_node("human_feedback", human_feedback_node)
     builder.add_node("task_orchestrator", task_orchestrator_node)
     builder.add_node("executor", executor_node)

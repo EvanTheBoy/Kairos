@@ -8,10 +8,10 @@ class AgentState(TypedDict):
     Represents the state of the agent workflow.
     """
     # Raw event data from the observer
-    raw_event: Any
+    raw_events: List[Any]
     
     # Processed and structured context
-    processed_context: Optional[dict]
+    processed_contexts: Optional[List[dict]]
     
     # A flag to indicate if the event is significant enough to trigger the strategist
     is_significant_event: bool
