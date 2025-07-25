@@ -12,7 +12,6 @@ from src.agents.agents import (
     create_event_aggregator_node,
     create_strategist_node,
     create_executor_agent,
-    create_research_agent,
     determine_agent_route,
 )
 
@@ -30,8 +29,6 @@ def human_feedback_node(state: AgentState) -> AgentState:
         logger.warning("No candidates to choose from.")
         return state
 
-    # In a real UI, this would be a clickable list.
-    # We simulate it with a command-line prompter.
     selected_task = inquirer.select(
         message="Please select a task to execute:",
         choices=[Choice(value=c, name=c) for c in candidates]
@@ -44,7 +41,6 @@ def human_feedback_node(state: AgentState) -> AgentState:
 def task_orchestrator_node(state: AgentState) -> AgentState:
     logger.info("Orchestrating task...")
 
-    # Initialize approved_tasks if it doesn't exist
     if 'approved_tasks' not in state:
         state['approved_tasks'] = []
 
@@ -59,7 +55,6 @@ def task_orchestrator_node(state: AgentState) -> AgentState:
         logger.debug(f"Adding new task to queue: '{current_task}' (type: {type(current_task)})")
         state['approved_tasks'].append(current_task)
 
-    # Now, figure out what the next task is.
     if state['approved_tasks']:
         # Pop the next task from the front of the queue
         next_task = state['approved_tasks'].pop(0)
@@ -73,7 +68,6 @@ def task_orchestrator_node(state: AgentState) -> AgentState:
             state['selected_task'] = None
 
     else:
-        # No more tasks to run
         state['selected_task'] = None
         logger.debug("Task queue is empty.")
 
@@ -87,16 +81,13 @@ def executor_node(state: AgentState) -> AgentState:
     executor = create_executor_agent()
     result_state = executor.invoke(state)
 
-    # The result of the ReAct agent is in the 'messages' of the returned state
     last_message = result_state.get('messages', [])[-1]
 
-    # Update our main state with the new messages from the executor
     state['messages'] = result_state.get('messages', [])
     state['task_result'] = last_message.content
 
     logger.debug(f"Task '{task}' executed. Result: {last_message.content}")
 
-    # Clear the selected task, so we don't re-add it to the queue
     state['selected_task'] = None
 
     return state
@@ -114,17 +105,14 @@ def research_agent_node(state: AgentState) -> AgentState:
         return state
 
     try:
-        # Import and use research tools directly
         from src.tools.research_tools import comprehensive_topic_research
 
         logger.info(f"Starting comprehensive research on: {task}")
 
-        # Call the research tool directly
         research_result = comprehensive_topic_research(task)
 
         logger.info(f"Research completed successfully. Result length: {len(research_result)} chars")
 
-        # Set the result in the expected format
         state['messages'] = [{'role': 'assistant', 'content': research_result}]
         state['task_result'] = research_result
 
@@ -140,7 +128,6 @@ def research_agent_node(state: AgentState) -> AgentState:
         state['messages'] = [{'role': 'assistant', 'content': error_msg}]
         state['task_result'] = error_msg
 
-    # Clear the selected task
     state['selected_task'] = None
 
     return state
@@ -149,11 +136,9 @@ def research_agent_node(state: AgentState) -> AgentState:
 def final_review_node(state: AgentState) -> AgentState:
     logger.info("Awaiting final review...")
 
-    # The last message from the executor/research agent is the result.
     messages = state.get('messages', [])
     if messages:
         last_message = messages[-1]
-        # Handle both dict and object message formats
         if isinstance(last_message, dict):
             final_result = last_message.get('content', str(last_message))
         else:
@@ -163,7 +148,6 @@ def final_review_node(state: AgentState) -> AgentState:
 
     logger.info(f"\n✅ Final Result:\n{final_result}\n")
 
-    # Ask for feedback
     feedback_action = inquirer.select(
         message="How do you want to proceed?",
         choices=[
@@ -202,7 +186,6 @@ def should_continue_execution(state: AgentState) -> str:
     Determines if there are more tasks to execute and routes to appropriate agent.
     """
     if state.get('selected_task'):
-        # Determine which agent should handle this task
         agent_route = determine_agent_route(state)
         logger.info(f"Routing task '{state.get('selected_task')}' to: {agent_route}")
         return agent_route
@@ -254,7 +237,6 @@ def build_graph():
     builder.add_edge("strategist", "human_feedback")
     builder.add_edge("human_feedback", "task_orchestrator")
 
-    # Updated conditional routing to support both executor and research agent
     builder.add_conditional_edges(
         "task_orchestrator",
         should_continue_execution,

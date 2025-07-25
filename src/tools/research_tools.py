@@ -27,23 +27,18 @@ class WebContentExtractor:
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
 
-            # Use BeautifulSoup for content extraction
             from bs4 import BeautifulSoup
 
             soup = BeautifulSoup(response.content, 'html.parser')
 
-            # Remove unwanted elements
             for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'advertisement']):
                 element.decompose()
 
-            # Extract title
             title_tag = soup.find('title')
             title = title_tag.get_text().strip() if title_tag else "No Title"
 
-            # Extract main content - try different approaches
             main_content = ""
 
-            # Try to find main content areas
             content_selectors = [
                 'main', 'article', '[role="main"]',
                 '.content', '#content', '.post-content',
@@ -56,13 +51,11 @@ class WebContentExtractor:
                     main_content = content_elem.get_text(separator='\n', strip=True)
                     break
 
-            # Fallback to body content
             if not main_content:
                 body = soup.find('body')
                 if body:
                     main_content = body.get_text(separator='\n', strip=True)
 
-            # Clean up the content
             lines = [line.strip() for line in main_content.split('\n') if line.strip()]
             main_content = '\n'.join(lines)
 
@@ -89,8 +82,6 @@ class SearchEngine:
     def search(self, query: str, num_results: int = 5) -> List[Dict[str, str]]:
         """Search for information and return structured results."""
         try:
-            # Using DuckDuckGo Instant Answer API as a simple example
-            # You can replace this with proper search APIs like Google Custom Search
             search_url = "https://api.duckduckgo.com/"
             params = {
                 'q': query,
@@ -114,7 +105,6 @@ class SearchEngine:
                     'source': 'DuckDuckGo Abstract'
                 })
 
-            # Get related topics
             for topic in data.get('RelatedTopics', [])[:num_results - 1]:
                 if isinstance(topic, dict) and topic.get('Text'):
                     results.append({
@@ -124,7 +114,6 @@ class SearchEngine:
                         'source': 'DuckDuckGo Related'
                     })
 
-            # Fallback: try HTML scraping if no API results
             if not results:
                 results = self._fallback_html_search(query, num_results)
 
@@ -155,7 +144,6 @@ class SearchEngine:
                 title = link.get_text().strip()
                 href = link.get('href', '')
 
-                # Find associated snippet
                 result_container = link.find_parent('div', class_='result')
                 snippet_elem = result_container.find('a', class_='result__snippet') if result_container else None
                 snippet = snippet_elem.get_text().strip() if snippet_elem else ""
@@ -175,7 +163,7 @@ class SearchEngine:
 
 
 class ReportGenerator:
-    """Generate structured reports following Kairos LLM patterns."""
+    """Generate structured reports following our Kairos LLM patterns."""
 
     def __init__(self, llm_type: str = "reasoning"):
         self.llm_type = llm_type
@@ -336,7 +324,6 @@ def comprehensive_topic_research(topic: str, include_sources: Optional[List[str]
         logger.info(f"Starting comprehensive research on: {topic}")
         research_data = []
 
-        # Web search for general information - call the function directly, not as a tool
         logger.info("Performing web search...")
         search_results = search_engine.search(f"{topic} comprehensive information facts", 5)
 
@@ -346,7 +333,6 @@ def comprehensive_topic_research(topic: str, include_sources: Optional[List[str]
                 search_text += f"## {i}. {result['title']}\n**URL:** {result['url']}\n**Summary:** {result['snippet']}\n\n"
             research_data.append(search_text)
 
-        # Additional targeted searches
         search_queries = [
             f"{topic} details specifications",
             f"{topic} current status 2025",
@@ -361,7 +347,6 @@ def comprehensive_topic_research(topic: str, include_sources: Optional[List[str]
                     query_text += f"- **{result['title']}**: {result['snippet']}\n"
                 research_data.append(query_text)
 
-        # If specific sources provided, try to fetch their content
         if include_sources:
             logger.info(f"Fetching content from {len(include_sources)} specific sources...")
             for url in include_sources:
@@ -373,10 +358,8 @@ def comprehensive_topic_research(topic: str, include_sources: Optional[List[str]
                 except Exception as e:
                     logger.warning(f"Failed to fetch {url}: {e}")
 
-        # Combine all research
         combined_research = "\n\n".join(research_data)
 
-        # Generate final professional report using LLM
         logger.info("Generating final research report...")
         final_report = report_gen.create_report(
             combined_research,
@@ -408,7 +391,6 @@ def compare_topics(topic1: str, topic2: str, focus_areas: Optional[List[str]] = 
 
         focus_text = f" {' '.join(focus_areas)}" if focus_areas else ""
 
-        # Research both topics thoroughly
         logger.info(f"Researching {topic1}...")
         topic1_queries = [
             f"{topic1} facts details specifications{focus_text}",
@@ -433,7 +415,6 @@ def compare_topics(topic1: str, topic2: str, focus_areas: Optional[List[str]] = 
             result = search_web_information(query, 3)
             topic2_data.append(result)
 
-        # Combine research data
         combined_data = f"""
 # Research Data for {topic1}
 {' '.join(topic1_data)}
@@ -445,7 +426,6 @@ def compare_topics(topic1: str, topic2: str, focus_areas: Optional[List[str]] = 
 {focus_areas if focus_areas else ['general comparison', 'key characteristics', 'significance']}
 """
 
-        # Generate comparison report
         logger.info("Generating comparison report...")
         comparison_report = generate_research_report(
             combined_data,

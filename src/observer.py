@@ -17,7 +17,6 @@ def observe(state: AgentState) -> AgentState:
     """
     logger.info("Observing environment...")
 
-    # Mock data: Simulate events that would trigger research tasks
     mock_events = [
         {
             "source": "browser",

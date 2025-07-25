@@ -17,18 +17,15 @@ def process_context(state: AgentState) -> AgentState:
 
     raw_events = state.get('raw_events')
     if not raw_events:
-        # No events to process
         return state
 
     processed_contexts = []
     for raw_event in raw_events:
-        # Enrich the event with a timestamp
         processed_context = {
             "timestamp": datetime.datetime.now().isoformat(),
             "original_event": raw_event
         }
 
-        # Enhanced processing for research-related events
         event_type = raw_event.get("type")
         event_source = raw_event.get("source")
         payload = raw_event.get("payload", {})
@@ -57,14 +54,12 @@ def process_context(state: AgentState) -> AgentState:
                 f"This suggests research interest in current technology trends and could benefit from detailed analysis."
             )
 
-        # Example of specific processing for a 'file_modified' event
         elif raw_event.get("type") == "file_modified":
             processed_context["summary"] = (
                 f"File '{payload.get('path')}' was modified. "
                 f"The new content has {len(payload.get('new_content', ''))} characters."
             )
 
-        # Specific processing for 'feishu' 'message' event
         elif raw_event.get("source") == "feishu" and raw_event.get("type") == "message":
             user = payload.get("user", "Unknown user")
             content = payload.get("content", "")
@@ -73,7 +68,6 @@ def process_context(state: AgentState) -> AgentState:
             )
 
         else:
-            # Default processing with research-friendly summary
             processed_context["summary"] = (
                 f"User activity detected from {event_source}: {event_type}. "
                 f"This activity suggests potential research or analysis opportunity."
@@ -81,7 +75,6 @@ def process_context(state: AgentState) -> AgentState:
 
         processed_contexts.append(processed_context)
 
-        # Debug logging
         logger.info(f"Processed context: {processed_context['summary']}")
 
     state['processed_contexts'] = processed_contexts

@@ -4,17 +4,14 @@
 import json
 import logging
 from langgraph.prebuilt import create_react_agent
-from langchain_core.messages import HumanMessage
 
 from src.prompts.template import apply_prompt_template
 from src.llms.llm import get_llm_by_type
 from src.config.agents import AGENT_LLM_MAP
-from src.utils.prompt_loader import load_prompt
 from src.utils.json_utils import repair_json_output
 from src.graph.state import AgentState
 
 
-# A more generic agent creator that doesn't rely on ReAct
 def _create_simple_agent_node(agent_name: str, state_updater):
     """
     Internal factory to create a simple agent node.
@@ -30,7 +27,6 @@ def _create_simple_agent_node(agent_name: str, state_updater):
         logger.info(f"Running {agent_name} agent...")
         logger.debug(f"State for {agent_name}: {state}")
 
-        # Use apply_prompt_template from your template system
         prompt_messages = apply_prompt_template(agent_name, state)
         llm = get_llm_by_type(AGENT_LLM_MAP[agent_type])
         response = llm.invoke(prompt_messages)
@@ -39,9 +35,7 @@ def _create_simple_agent_node(agent_name: str, state_updater):
             logger.debug(f"{agent_name} response: {response.content}")
             return state_updater(state, response.content)
         else:
-            # Handle LLM failure
             logger.error(f"LLM call failed for {agent_name}.")
-            # Set a default state to avoid errors down the line
             if agent_name == "event_aggregator":
                 state['is_significant_event'] = False
             return state
@@ -78,7 +72,6 @@ def create_strategist_node():
 
     def state_updater(state: AgentState, response_content: str) -> AgentState:
         try:
-            # The prompt asks for a JSON object with a single key "intent_candidates"
             repaired_json = repair_json_output(response_content)
             response_json = json.loads(repaired_json)
             candidates = response_json.get("intent_candidates", [])
@@ -96,7 +89,6 @@ def create_executor_agent():
     """Creates the ReAct agent for executing tasks with enhanced research capabilities."""
     from src.tools import basic_tools, preference_store
 
-    # Import research tools
     try:
         from src.tools.research_tools import (
             fetch_webpage_content,
@@ -114,7 +106,6 @@ def create_executor_agent():
         logger.warning(f"Research tools not available: {e}")
         research_tools_available = False
 
-    # Base tools that are always available
     tools = [
         basic_tools.read_file,
         basic_tools.write_file,
@@ -123,7 +114,6 @@ def create_executor_agent():
         preference_store.set_preference,
     ]
 
-    # Add research tools if available
     if research_tools_available:
         tools.extend([
             fetch_webpage_content,
@@ -154,7 +144,6 @@ def create_research_agent():
             return state
 
         try:
-            # Import research tools
             from src.tools.research_tools import (
                 search_web_information,
                 comprehensive_topic_research,
@@ -163,12 +152,10 @@ def create_research_agent():
 
             logger.info(f"Starting comprehensive research on: {task}")
 
-            # Use comprehensive research tool directly
             research_result = comprehensive_topic_research(task)
 
             logger.info(f"Research completed. Result length: {len(research_result)} characters")
 
-            # Set the result in messages format
             state['messages'] = [{
                 'role': 'assistant',
                 'content': research_result
@@ -207,7 +194,6 @@ def determine_agent_route(state: AgentState) -> str:
     intent_candidates = state.get('intent_candidates', [])
     logger = logging.getLogger(__name__)
 
-    # Keywords that indicate web research tasks (external information)
     web_research_keywords = [
         'research', 'compare', 'analyze', 'investigate', 'study',
         'search', 'information', 'facts', 'web', 'comprehensive',
@@ -215,7 +201,6 @@ def determine_agent_route(state: AgentState) -> str:
         'technology trends', 'industry analysis', 'benchmarking'
     ]
 
-    # Keywords that indicate internal/business tasks (company data)
     internal_task_keywords = [
         'crm', 'internal', 'participant', 'registration', 'questionnaire',
         'database', 'report generation', 'leads', 'statistics',
@@ -223,29 +208,23 @@ def determine_agent_route(state: AgentState) -> str:
         'booming hub', 'event review', 'specific statistics'
     ]
 
-    # Check each intent candidate
     for intent in intent_candidates:
         intent_lower = intent.lower()
 
-        # Check for internal/business task keywords first
         if any(keyword in intent_lower for keyword in internal_task_keywords):
             logger.info(f"Routing to executor: Internal/business task detected")
             return "executor"
 
-        # Check for web research keywords
         if any(keyword in intent_lower for keyword in web_research_keywords):
             logger.info(f"Routing to research_agent: Web research task detected")
             return "research_agent"
 
-        # Check for comparison patterns (like "X vs Y") - these are usually research
         if (' vs ' in intent_lower or ' versus ' in intent_lower or
                 'compare' in intent_lower or 'comparison' in intent_lower):
-            # But exclude internal comparisons
             if not any(keyword in intent_lower for keyword in internal_task_keywords):
                 logger.info(f"Routing to research_agent: Comparison task detected")
                 return "research_agent"
 
-    # Default to executor for other tasks
     logger.info(f"Routing to executor: Default routing for non-research task")
     return "executor"
 
