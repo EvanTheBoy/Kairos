@@ -35,7 +35,7 @@ def get_prompt_template(prompt_name: str) -> str:
 
 
 def apply_prompt_template(
-    prompt_name: str, state: AgentState, configurable: Configuration = None
+        prompt_name: str, state: AgentState, configurable: Configuration = None
 ) -> list:
     """
     Apply template variables to a prompt template and return formatted messages.
@@ -60,6 +60,41 @@ def apply_prompt_template(
     try:
         template = env.get_template(f"{prompt_name}.md")
         system_prompt = template.render(**state_vars)
-        return [{"role": "system", "content": system_prompt}] + state["messages"]
+
+        # Initialize messages if it doesn't exist
+        existing_messages = state.get("messages", [])
+
+        # Convert any LangChain message objects to dict format
+        formatted_messages = []
+        for msg in existing_messages:
+            if hasattr(msg, 'content') and hasattr(msg, 'role'):
+                # LangChain message object
+                formatted_messages.append({
+                    "role": msg.role,
+                    "content": msg.content
+                })
+            elif isinstance(msg, dict):
+                # Already a dict
+                formatted_messages.append(msg)
+            else:
+                # Try to convert to string
+                formatted_messages.append({
+                    "role": "user",
+                    "content": str(msg)
+                })
+
+        # Ensure we have proper message format for Gemini
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Add existing messages if any
+        if formatted_messages:
+            messages.extend(formatted_messages)
+
+        # If no user message exists, add a default one for Gemini compatibility
+        has_user_message = any(msg.get("role") == "user" for msg in messages)
+        if not has_user_message:
+            messages.append({"role": "user", "content": "Please proceed with the task."})
+
+        return messages
     except Exception as e:
         raise ValueError(f"Error applying template {prompt_name}: {e}")

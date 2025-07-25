@@ -10,4 +10,5 @@ AGENT_LLM_MAP = {
     "event_aggregator": "basic",
     "strategist": "reasoning",
     "executor": "reasoning",
+    "researcher": "reasoning",  # Add research agent
 }

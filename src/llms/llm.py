@@ -42,7 +42,7 @@ def _get_env_llm_conf(llm_type: str) -> Dict[str, Any]:
     conf = {}
     for key, value in os.environ.items():
         if key.startswith(prefix):
-            conf_key = key[len(prefix) :].lower()
+            conf_key = key[len(prefix):].lower()
             conf[conf_key] = value
     return conf
 
@@ -72,7 +72,8 @@ def _create_llm_use_conf(llm_type: LLMType, conf: Dict[str, Any]) -> BaseChatMod
     if "max_retries" not in merged_conf:
         merged_conf["max_retries"] = 3
 
-    if llm_type == "reasoning":
+    # Handle DeepSeek reasoning model
+    if llm_type == "reasoning" and "deepseek" in merged_conf.get("base_url", "").lower():
         merged_conf["api_base"] = merged_conf.pop("base_url", None)
 
     # Handle SSL verification and timeout settings
@@ -85,16 +86,43 @@ def _create_llm_use_conf(llm_type: LLMType, conf: Dict[str, Any]) -> BaseChatMod
         merged_conf["http_client"] = http_client
         merged_conf["http_async_client"] = http_async_client
 
+    # Handle Azure endpoints
     if "azure_endpoint" in merged_conf or os.getenv("AZURE_OPENAI_ENDPOINT"):
         return AzureChatOpenAI(**merged_conf)
-    if llm_type == "reasoning":
+
+    # Handle DeepSeek
+    if llm_type == "reasoning" and "deepseek" in merged_conf.get("api_base", "").lower():
         return ChatDeepSeek(**merged_conf)
-    else:
-        return ChatOpenAI(**merged_conf)
+
+    # Handle Gemini through Google's OpenAI-compatible endpoint
+    if "generativelanguage.googleapis.com" in merged_conf.get("base_url", ""):
+        # For Gemini, we need to adjust the configuration
+        gemini_conf = merged_conf.copy()
+
+        # Ensure the base_url is correct for OpenAI compatibility
+        if not gemini_conf["base_url"].endswith("/"):
+            gemini_conf["base_url"] += "/"
+
+        # Add specific headers for Gemini
+        default_headers = gemini_conf.get("default_headers", {})
+        default_headers.update({
+            "x-goog-api-key": gemini_conf["api_key"]
+        })
+        gemini_conf["default_headers"] = default_headers
+
+        # Adjust model name for Gemini if needed
+        model = gemini_conf.get("model", "")
+        if not model.startswith("gemini"):
+            gemini_conf["model"] = f"gemini-{model}" if model else "gemini-2.5-flash"
+
+        return ChatOpenAI(**gemini_conf)
+
+    # Default to ChatOpenAI for other cases
+    return ChatOpenAI(**merged_conf)
 
 
 def get_llm_by_type(
-    llm_type: LLMType,
+        llm_type: LLMType,
 ) -> BaseChatModel:
     """
     Get LLM instance by type. Returns cached instance if available.

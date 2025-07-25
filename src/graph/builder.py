@@ -12,12 +12,15 @@ from src.agents.agents import (
     create_event_aggregator_node,
     create_strategist_node,
     create_executor_agent,
+    create_research_agent,
+    determine_agent_route,
 )
 
 logger = logging.getLogger(__name__)
 
+
 # ==============================================================================
-# Node Functions (Placeholders)
+# Node Functions
 # ==============================================================================
 
 def human_feedback_node(state: AgentState) -> AgentState:
@@ -26,76 +29,140 @@ def human_feedback_node(state: AgentState) -> AgentState:
     if not candidates:
         logger.warning("No candidates to choose from.")
         return state
-        
+
     # In a real UI, this would be a clickable list.
     # We simulate it with a command-line prompter.
     selected_task = inquirer.select(
         message="Please select a task to execute:",
         choices=[Choice(value=c, name=c) for c in candidates]
     ).execute()
-    
+
     state['selected_task'] = selected_task
     return state
 
+
 def task_orchestrator_node(state: AgentState) -> AgentState:
     logger.info("Orchestrating task...")
-    
+
     # Initialize approved_tasks if it doesn't exist
     if 'approved_tasks' not in state:
         state['approved_tasks'] = []
 
     # This node is entered from two places:
     # 1. From human_feedback: a new task is selected and needs to be added to the queue.
-    # 2. From executor: a task has finished, and we need to pick the next one.
-    
+    # 2. From executor/research_agent: a task has finished, and we need to pick the next one.
+
     # If selected_task has a value, it's a new task from the user.
     # Add it to the end of the queue.
     if state.get('selected_task'):
-        logger.debug(f"Adding new task to queue: {state['selected_task']}")
-        state['approved_tasks'].append(state['selected_task'])
-    
+        current_task = state['selected_task']
+        logger.debug(f"Adding new task to queue: '{current_task}' (type: {type(current_task)})")
+        state['approved_tasks'].append(current_task)
+
     # Now, figure out what the next task is.
     if state['approved_tasks']:
         # Pop the next task from the front of the queue
         next_task = state['approved_tasks'].pop(0)
         state['selected_task'] = next_task
-        logger.debug(f"Next task to execute: {next_task}")
+        logger.info(f"Next task to execute: '{next_task}' (length: {len(str(next_task))} chars)")
         logger.debug(f"Remaining tasks in queue: {state['approved_tasks']}")
+
+        # Additional validation
+        if not next_task or not str(next_task).strip():
+            logger.error(f"Selected task is empty or whitespace only: '{next_task}'")
+            state['selected_task'] = None
+
     else:
         # No more tasks to run
         state['selected_task'] = None
         logger.debug("Task queue is empty.")
-        
+
     return state
+
 
 def executor_node(state: AgentState) -> AgentState:
     task = state.get('selected_task')
     logger.info(f"Executing task: {task}")
-    
+
     executor = create_executor_agent()
     result_state = executor.invoke(state)
-    
+
     # The result of the ReAct agent is in the 'messages' of the returned state
     last_message = result_state.get('messages', [])[-1]
-    
+
     # Update our main state with the new messages from the executor
     state['messages'] = result_state.get('messages', [])
     state['task_result'] = last_message.content
-    
+
     logger.debug(f"Task '{task}' executed. Result: {last_message.content}")
-    
+
     # Clear the selected task, so we don't re-add it to the queue
     state['selected_task'] = None
-    
+
     return state
+
+
+def research_agent_node(state: AgentState) -> AgentState:
+    task = state.get('selected_task')
+    logger.info(f"Research agent node executing task: {task}")
+
+    if not task:
+        logger.error("No task provided to research agent node")
+        state['messages'] = [{'role': 'assistant', 'content': 'ERROR: No task provided'}]
+        state['task_result'] = 'ERROR: No task provided'
+        state['selected_task'] = None
+        return state
+
+    try:
+        # Import and use research tools directly
+        from src.tools.research_tools import comprehensive_topic_research
+
+        logger.info(f"Starting comprehensive research on: {task}")
+
+        # Call the research tool directly
+        research_result = comprehensive_topic_research(task)
+
+        logger.info(f"Research completed successfully. Result length: {len(research_result)} chars")
+
+        # Set the result in the expected format
+        state['messages'] = [{'role': 'assistant', 'content': research_result}]
+        state['task_result'] = research_result
+
+    except ImportError as e:
+        logger.error(f"Research tools not available: {e}")
+        error_msg = f'ERROR: Research tools not available: {str(e)}'
+        state['messages'] = [{'role': 'assistant', 'content': error_msg}]
+        state['task_result'] = error_msg
+
+    except Exception as e:
+        logger.error(f"Error in research execution: {e}")
+        error_msg = f'ERROR: Research failed: {str(e)}'
+        state['messages'] = [{'role': 'assistant', 'content': error_msg}]
+        state['task_result'] = error_msg
+
+    # Clear the selected task
+    state['selected_task'] = None
+
+    return state
+
 
 def final_review_node(state: AgentState) -> AgentState:
     logger.info("Awaiting final review...")
-    
-    # The last message from the executor is the result.
-    final_result = state.get('messages', [])[-1].content
+
+    # The last message from the executor/research agent is the result.
+    messages = state.get('messages', [])
+    if messages:
+        last_message = messages[-1]
+        # Handle both dict and object message formats
+        if isinstance(last_message, dict):
+            final_result = last_message.get('content', str(last_message))
+        else:
+            final_result = getattr(last_message, 'content', str(last_message))
+    else:
+        final_result = state.get('task_result', 'No result available')
+
     logger.info(f"\n✅ Final Result:\n{final_result}\n")
-    
+
     # Ask for feedback
     feedback_action = inquirer.select(
         message="How do you want to proceed?",
@@ -104,7 +171,7 @@ def final_review_node(state: AgentState) -> AgentState:
             Choice(value="needs_modification", name="Request Modification"),
         ]
     ).execute()
-    
+
     if feedback_action == "needs_modification":
         modification_request = inquirer.text(
             message="Please describe the required modifications:"
@@ -112,8 +179,9 @@ def final_review_node(state: AgentState) -> AgentState:
         state['final_feedback'] = modification_request
     else:
         state['final_feedback'] = "accept"
-        
+
     return state
+
 
 # ==============================================================================
 # Conditional Routing Functions
@@ -128,14 +196,19 @@ def should_activate_strategist(state: AgentState) -> str:
     else:
         return END
 
+
 def should_continue_execution(state: AgentState) -> str:
     """
-    Determines if there are more tasks to execute.
+    Determines if there are more tasks to execute and routes to appropriate agent.
     """
     if state.get('selected_task'):
-        return "executor"
+        # Determine which agent should handle this task
+        agent_route = determine_agent_route(state)
+        logger.info(f"Routing task '{state.get('selected_task')}' to: {agent_route}")
+        return agent_route
     else:
         return "final_review"
+
 
 def should_refine_or_end(state: AgentState) -> str:
     """
@@ -147,12 +220,13 @@ def should_refine_or_end(state: AgentState) -> str:
     else:
         return END
 
+
 # ==============================================================================
 # Graph Builder
 # ==============================================================================
 
 def build_graph():
-    """Builds and returns the Kairos agent workflow graph."""
+    """Builds and returns the Kairos agent workflow graph with research capabilities."""
     builder = StateGraph(AgentState)
 
     # --- Add Nodes ---
@@ -163,34 +237,43 @@ def build_graph():
     builder.add_node("human_feedback", human_feedback_node)
     builder.add_node("task_orchestrator", task_orchestrator_node)
     builder.add_node("executor", executor_node)
+    builder.add_node("research_agent", research_agent_node)  # Add research agent
     builder.add_node("final_review", final_review_node)
 
     # --- Add Edges ---
     builder.add_edge(START, "observer")
     builder.add_edge("observer", "context_processor")
     builder.add_edge("context_processor", "event_aggregator")
-    
+
     builder.add_conditional_edges(
         "event_aggregator",
         should_activate_strategist,
         {"strategist": "strategist", END: END}
     )
-    
+
     builder.add_edge("strategist", "human_feedback")
     builder.add_edge("human_feedback", "task_orchestrator")
-    
+
+    # Updated conditional routing to support both executor and research agent
     builder.add_conditional_edges(
         "task_orchestrator",
         should_continue_execution,
-        {"executor": "executor", "final_review": "final_review"}
+        {
+            "executor": "executor",
+            "research_agent": "research_agent",
+            "final_review": "final_review"
+        }
     )
-    
-    builder.add_edge("executor", "task_orchestrator") # Loop back to orchestrator
-    
+
+    # Both agents loop back to orchestrator
+    builder.add_edge("executor", "task_orchestrator")
+    builder.add_edge("research_agent", "task_orchestrator")
+
     builder.add_conditional_edges(
         "final_review",
         should_refine_or_end,
         {"strategist": "strategist", END: END}
     )
 
+    logger.info("Built Kairos workflow graph with research agent capabilities")
     return builder.compile()
