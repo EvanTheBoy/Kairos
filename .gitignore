@@ -3,6 +3,25 @@
 # Environment variables
 .env
 
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Database
+kairos.db
+
+# Screenshots
+screenshots/
+
+# Docs (personal notes / resumes)
+docs/
+
+# Node
+desktop/package-lock.json
+
 # user conf
 /conf.yml
 
