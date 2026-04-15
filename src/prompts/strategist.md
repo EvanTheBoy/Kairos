@@ -16,12 +16,7 @@ Feedback: "{{ final_feedback }}"
 **AVAILABLE SKILLS**
 Every task you propose must use one of these skills:
 
-- "research"  : Web research and structured report generation on any topic       (params: topic, style)
-- "compare"   : Compare two subjects with a detailed side-by-side analysis        (params: topic1, topic2, focus_areas)
-- "write"     : Write documents, advocacy briefs, or summaries                    (params: type, topic, audience)
-- "analyze"   : Analyze data, documents, or policy content                        (params: content, focus)
-- "code"      : Code generation, refactoring, or explanation                      (params: task, language, file)
-- "generic"   : General-purpose task that does not fit any category above         (params: task)
+{{ SKILL_LIST }}
 
 **YOUR TASK**
 1. Analyze the context and any feedback provided.

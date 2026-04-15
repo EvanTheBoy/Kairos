@@ -7,6 +7,7 @@ from datetime import datetime
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from langgraph.prebuilt.chat_agent_executor import AgentState
 from src.config.configuration import Configuration
+from src.skills.registry import SkillRegistry
 
 # Initialize Jinja2 environment
 env = Environment(
@@ -50,6 +51,7 @@ def apply_prompt_template(
     # Convert state to dict for template rendering
     state_vars = {
         "CURRENT_TIME": datetime.now().strftime("%a %b %d %Y %H:%M:%S %z"),
+        "SKILL_LIST": SkillRegistry.prompt_description(),
         **state,
     }
 
