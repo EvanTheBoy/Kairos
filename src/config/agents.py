@@ -9,6 +9,5 @@ LLMType = Literal["basic", "reasoning", "vision"]
 AGENT_LLM_MAP = {
     "event_aggregator": "basic",
     "strategist": "reasoning",
-    "executor": "reasoning",
-    "researcher": "reasoning",
+    "skill_executor": "reasoning",
 }

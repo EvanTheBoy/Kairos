@@ -11,8 +11,7 @@ from src.context_processor import process_context
 from src.agents.agents import (
     create_event_aggregator_node,
     create_strategist_node,
-    create_executor_agent,
-    determine_agent_route,
+    create_skill_executor,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,12 +28,13 @@ def human_feedback_node(state: AgentState) -> AgentState:
         logger.warning("No candidates to choose from.")
         return state
 
-    selected_task = inquirer.select(
+    selected = inquirer.select(
         message="Please select a task to execute:",
-        choices=[Choice(value=c, name=c) for c in candidates]
+        choices=[Choice(value=c, name=c['description']) for c in candidates]
     ).execute()
 
-    state['selected_task'] = selected_task
+    state['skill_spec'] = selected
+    state['selected_task'] = selected['description']
     return state
 
 
@@ -44,92 +44,70 @@ def task_orchestrator_node(state: AgentState) -> AgentState:
     if 'approved_tasks' not in state:
         state['approved_tasks'] = []
 
-    # This node is entered from two places:
-    # 1. From human_feedback: a new task is selected and needs to be added to the queue.
-    # 2. From executor/research_agent: a task has finished, and we need to pick the next one.
-
-    # If selected_task has a value, it's a new task from the user.
-    # Add it to the end of the queue.
-    if state.get('selected_task'):
-        current_task = state['selected_task']
-        logger.debug(f"Adding new task to queue: '{current_task}' (type: {type(current_task)})")
-        state['approved_tasks'].append(current_task)
+    # Entered from two places:
+    # 1. From human_feedback: skill_spec is freshly set → enqueue it.
+    # 2. From skill_executor: skill_spec was cleared → pop the next one.
+    if state.get('skill_spec'):
+        state['approved_tasks'].append(state['skill_spec'])
+        logger.debug(f"Enqueued skill: '{state['skill_spec'].get('description')}'")
 
     if state['approved_tasks']:
-        # Pop the next task from the front of the queue
-        next_task = state['approved_tasks'].pop(0)
-        state['selected_task'] = next_task
-        logger.info(f"Next task to execute: '{next_task}' (length: {len(str(next_task))} chars)")
-        logger.debug(f"Remaining tasks in queue: {state['approved_tasks']}")
-
-        # Additional validation
-        if not next_task or not str(next_task).strip():
-            logger.error(f"Selected task is empty or whitespace only: '{next_task}'")
-            state['selected_task'] = None
-
+        next_skill = state['approved_tasks'].pop(0)
+        state['skill_spec'] = next_skill
+        state['selected_task'] = next_skill.get('description', '')
+        logger.info(f"Next skill to execute: '{state['selected_task']}'")
+        logger.debug(f"Remaining in queue: {len(state['approved_tasks'])}")
     else:
+        state['skill_spec'] = None
         state['selected_task'] = None
         logger.debug("Task queue is empty.")
 
     return state
 
 
-def executor_node(state: AgentState) -> AgentState:
-    task = state.get('selected_task')
-    logger.info(f"Executing task: {task}")
-
-    executor = create_executor_agent()
-    result_state = executor.invoke(state)
-
-    last_message = result_state.get('messages', [])[-1]
-
-    state['messages'] = result_state.get('messages', [])
-    state['task_result'] = last_message.content
-
-    logger.debug(f"Task '{task}' executed. Result: {last_message.content}")
-
-    state['selected_task'] = None
-
-    return state
-
-
-def research_agent_node(state: AgentState) -> AgentState:
-    task = state.get('selected_task')
-    logger.info(f"Research agent node executing task: {task}")
-
-    if not task:
-        logger.error("No task provided to research agent node")
-        state['messages'] = [{'role': 'assistant', 'content': 'ERROR: No task provided'}]
-        state['task_result'] = 'ERROR: No task provided'
-        state['selected_task'] = None
+def skill_executor_node(state: AgentState) -> AgentState:
+    skill_spec = state.get('skill_spec')
+    if not skill_spec:
+        logger.error("skill_executor_node called with no skill_spec in state")
+        state['task_result'] = 'ERROR: No skill selected'
         return state
 
+    skill_name = skill_spec.get('skill', 'generic')
+    skill_params = skill_spec.get('params', {})
+    logger.info(f"Executing skill '{skill_name}': {skill_spec.get('description')}")
+
+    # Normalise messages for Gemini compatibility:
+    # - Convert LangChain message objects to plain dicts
+    # - Ensure at least one user message exists (Gemini requires it)
+    normalised = []
+    for msg in state.get('messages', []):
+        if isinstance(msg, dict):
+            normalised.append(msg)
+        elif hasattr(msg, 'role') and hasattr(msg, 'content'):
+            normalised.append({'role': msg.role, 'content': msg.content})
+    if not any(m.get('role') == 'user' for m in normalised):
+        normalised.append({'role': 'user', 'content': 'Please proceed with the task.'})
+
     try:
-        from src.tools.research_tools import comprehensive_topic_research
+        agent = create_skill_executor(skill_name, skill_params)
+        result_state = agent.invoke({**state, 'messages': normalised})
 
-        logger.info(f"Starting comprehensive research on: {task}")
+        messages = result_state.get('messages', [])
+        last = messages[-1] if messages else None
+        task_result = getattr(last, 'content', str(last)) if last else 'No result'
 
-        research_result = comprehensive_topic_research(task)
-
-        logger.info(f"Research completed successfully. Result length: {len(research_result)} chars")
-
-        state['messages'] = [{'role': 'assistant', 'content': research_result}]
-        state['task_result'] = research_result
-
-    except ImportError as e:
-        logger.error(f"Research tools not available: {e}")
-        error_msg = f'ERROR: Research tools not available: {str(e)}'
-        state['messages'] = [{'role': 'assistant', 'content': error_msg}]
-        state['task_result'] = error_msg
+        state['messages'] = messages
+        state['task_result'] = task_result
+        logger.info(f"Skill '{skill_name}' completed. Result: {len(str(task_result))} chars")
 
     except Exception as e:
-        logger.error(f"Error in research execution: {e}")
-        error_msg = f'ERROR: Research failed: {str(e)}'
+        logger.error(f"Skill '{skill_name}' failed: {e}")
+        error_msg = f'ERROR: Skill execution failed: {str(e)}'
         state['messages'] = [{'role': 'assistant', 'content': error_msg}]
         state['task_result'] = error_msg
 
+    state['skill_spec'] = None
     state['selected_task'] = None
-
     return state
 
 
@@ -182,15 +160,11 @@ def should_activate_strategist(state: AgentState) -> str:
 
 
 def should_continue_execution(state: AgentState) -> str:
-    """
-    Determines if there are more tasks to execute and routes to appropriate agent.
-    """
-    if state.get('selected_task'):
-        agent_route = determine_agent_route(state)
-        logger.info(f"Routing task '{state.get('selected_task')}' to: {agent_route}")
-        return agent_route
-    else:
-        return "final_review"
+    """Routes to skill_executor if a skill is queued, otherwise to final_review."""
+    if state.get('skill_spec'):
+        logger.info(f"Routing to skill_executor: '{state['skill_spec'].get('description')}'")
+        return "skill_executor"
+    return "final_review"
 
 
 def should_refine_or_end(state: AgentState) -> str:
@@ -219,8 +193,7 @@ def build_graph():
     builder.add_node("strategist", create_strategist_node())
     builder.add_node("human_feedback", human_feedback_node)
     builder.add_node("task_orchestrator", task_orchestrator_node)
-    builder.add_node("executor", executor_node)
-    builder.add_node("research_agent", research_agent_node)  # Add research agent
+    builder.add_node("skill_executor", skill_executor_node)
     builder.add_node("final_review", final_review_node)
 
     # --- Add Edges ---
@@ -240,16 +213,10 @@ def build_graph():
     builder.add_conditional_edges(
         "task_orchestrator",
         should_continue_execution,
-        {
-            "executor": "executor",
-            "research_agent": "research_agent",
-            "final_review": "final_review"
-        }
+        {"skill_executor": "skill_executor", "final_review": "final_review"}
     )
 
-    # Both agents loop back to orchestrator
-    builder.add_edge("executor", "task_orchestrator")
-    builder.add_edge("research_agent", "task_orchestrator")
+    builder.add_edge("skill_executor", "task_orchestrator")
 
     builder.add_conditional_edges(
         "final_review",
@@ -257,5 +224,5 @@ def build_graph():
         {"strategist": "strategist", END: END}
     )
 
-    logger.info("Built Kairos workflow graph with research agent capabilities")
+    logger.info("Built Kairos workflow graph with skills-based execution")
     return builder.compile()

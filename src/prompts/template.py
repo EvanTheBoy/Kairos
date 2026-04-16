@@ -18,6 +18,32 @@ env = Environment(
 )
 
 
+def render_skill_prompt(skill_name: str, params: dict) -> str:
+    """
+    Render a skill-specific prompt template with the given parameters.
+
+    Called by create_skill_executor to build the system prompt for a skill's
+    ReAct agent. The template file path is read from SkillRegistry so this
+    function never needs to know about individual skill names.
+
+    Args:
+        skill_name: Key into SkillRegistry (e.g. "research", "compare")
+        params:     Skill parameters from the selected SkillSpec, injected as
+                    Jinja2 variables (e.g. {{ topic }}, {{ style }})
+
+    Returns:
+        Rendered system prompt string.
+    """
+    prompt_file = SkillRegistry.get_prompt_file(skill_name)
+    if not prompt_file:
+        raise ValueError(f"No prompt file registered for skill: '{skill_name}'")
+    try:
+        template = env.get_template(prompt_file)
+        return template.render(**params)
+    except Exception as e:
+        raise ValueError(f"Error rendering skill prompt '{prompt_file}': {e}")
+
+
 def get_prompt_template(prompt_name: str) -> str:
     """
     Load and return a prompt template using Jinja2.

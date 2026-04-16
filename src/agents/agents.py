@@ -5,9 +5,10 @@ import json
 import logging
 from langgraph.prebuilt import create_react_agent
 
-from src.prompts.template import apply_prompt_template
+from src.prompts.template import apply_prompt_template, render_skill_prompt
 from src.llms.llm import get_llm_by_type
 from src.config.agents import AGENT_LLM_MAP
+from src.skills.registry import SkillRegistry
 from src.utils.json_utils import repair_json_output
 from src.graph.state import AgentState
 
@@ -75,8 +76,17 @@ def create_strategist_node():
             repaired_json = repair_json_output(response_content)
             response_json = json.loads(repaired_json)
             candidates = response_json.get("intent_candidates", [])
+
+            # Normalise: legacy plain-string format → SkillSpec dicts
+            if candidates and isinstance(candidates[0], str):
+                logger.warning("Strategist returned legacy string format — wrapping as generic skills")
+                candidates = [
+                    {"skill": "generic", "description": c, "params": {"task": c}}
+                    for c in candidates
+                ]
+
             state['intent_candidates'] = candidates
-            logger.info(f"Strategist proposed candidates: {candidates}")
+            logger.info(f"Strategist proposed {len(candidates)} candidate(s)")
         except json.JSONDecodeError:
             logger.error(f"Strategist output was not valid JSON: {response_content}")
             state['intent_candidates'] = []
@@ -85,148 +95,70 @@ def create_strategist_node():
     return _create_simple_agent_node("strategist", state_updater)
 
 
-def create_executor_agent():
-    """Creates the ReAct agent for executing tasks with enhanced research capabilities."""
-    from src.tools import basic_tools, preference_store
-
-    try:
-        from src.tools.research_tools import (
-            fetch_webpage_content,
-            search_web_information,
-            generate_research_report,
-            comprehensive_topic_research,
-            compare_topics,
-            extract_key_facts
-        )
-        research_tools_available = True
-        logger = logging.getLogger(__name__)
-        logger.info("Research tools loaded successfully")
-    except ImportError as e:
-        logger = logging.getLogger(__name__)
-        logger.warning(f"Research tools not available: {e}")
-        research_tools_available = False
-
-    tools = [
-        basic_tools.read_file,
-        basic_tools.write_file,
-        basic_tools.execute_shell_command,
-        preference_store.get_preference,
-        preference_store.set_preference,
-    ]
-
-    if research_tools_available:
-        tools.extend([
-            fetch_webpage_content,
-            search_web_information,
-            generate_research_report,
-            comprehensive_topic_research,
-            compare_topics,
-            extract_key_facts,
-        ])
-
-    return create_react_agent_from_config("executor", "executor", tools)
 
 
-def create_research_agent():
-    """Creates a direct research agent that executes tasks immediately."""
-    logger = logging.getLogger(__name__)
-
-    def research_agent_function(state: AgentState) -> AgentState:
-        task = state.get('selected_task', '')
-        logger.info(f"Direct research agent executing: '{task}'")
-
-        if not task or task.strip() == '':
-            logger.error("No task provided to research agent")
-            state['messages'] = [{
-                'role': 'assistant',
-                'content': 'ERROR: No research task was provided.'
-            }]
-            return state
-
-        try:
-            from src.tools.research_tools import (
-                search_web_information,
-                comprehensive_topic_research,
-                generate_research_report
-            )
-
-            logger.info(f"Starting comprehensive research on: {task}")
-
-            research_result = comprehensive_topic_research(task)
-
-            logger.info(f"Research completed. Result length: {len(research_result)} characters")
-
-            state['messages'] = [{
-                'role': 'assistant',
-                'content': research_result
-            }]
-
-            return state
-
-        except ImportError as e:
-            logger.error(f"Research tools not available: {e}")
-            state['messages'] = [{
-                'role': 'assistant',
-                'content': f'ERROR: Research tools not available: {str(e)}'
-            }]
-            return state
-        except Exception as e:
-            logger.error(f"Error in research execution: {e}")
-            state['messages'] = [{
-                'role': 'assistant',
-                'content': f'ERROR: Research failed: {str(e)}'
-            }]
-            return state
-
-    return research_agent_function
-
-
-def determine_agent_route(state: AgentState) -> str:
+def _build_tool_registry() -> dict:
     """
-    Determine which agent should handle the current task based on intent.
+    Returns a mapping of tool name → tool object for all tools available in Kairos.
+    Used by create_skill_executor to resolve the tool list declared in SkillRegistry.
+    """
+    from src.tools import basic_tools, preference_store
+    from src.tools.research_tools import (
+        search_web_information,
+        fetch_webpage_content,
+        generate_research_report,
+        comprehensive_topic_research,
+        compare_topics,
+        extract_key_facts,
+    )
+    return {
+        "search_web_information": search_web_information,
+        "fetch_webpage_content": fetch_webpage_content,
+        "generate_research_report": generate_research_report,
+        "comprehensive_topic_research": comprehensive_topic_research,
+        "compare_topics": compare_topics,
+        "extract_key_facts": extract_key_facts,
+        "read_file": basic_tools.read_file,
+        "write_file": basic_tools.write_file,
+        "execute_shell_command": basic_tools.execute_shell_command,
+        "get_preference": preference_store.get_preference,
+        "set_preference": preference_store.set_preference,
+    }
+
+
+def create_skill_executor(skill_name: str, skill_params: dict):
+    """
+    Factory that creates a skill-specific ReAct agent.
+
+    Looks up the skill in SkillRegistry to get its prompt file and allowed tools,
+    renders the prompt template with the skill params, and returns a runnable agent.
 
     Args:
-        state: Current agent state with intent candidates
+        skill_name:   Key into SkillRegistry (e.g. "research", "compare")
+        skill_params: Params from the selected SkillSpec, injected into the prompt
 
     Returns:
-        Agent name to route to ("research_agent" or "executor")
+        A compiled ReAct agent ready to be invoked with an AgentState.
     """
-    intent_candidates = state.get('intent_candidates', [])
     logger = logging.getLogger(__name__)
 
-    web_research_keywords = [
-        'research', 'compare', 'analyze', 'investigate', 'study',
-        'search', 'information', 'facts', 'web', 'comprehensive',
-        'comparison', 'detailed analysis', 'market research',
-        'technology trends', 'industry analysis', 'benchmarking'
-    ]
+    tool_names = SkillRegistry.get_tools(skill_name)
+    all_tools = _build_tool_registry()
+    tools = [all_tools[name] for name in tool_names if name in all_tools]
 
-    internal_task_keywords = [
-        'crm', 'internal', 'participant', 'registration', 'questionnaire',
-        'database', 'report generation', 'leads', 'statistics',
-        'enrollment', 'company data', 'persona analysis',
-        'booming hub', 'event review', 'specific statistics'
-    ]
+    missing = [n for n in tool_names if n not in all_tools]
+    if missing:
+        logger.warning(f"Skill '{skill_name}' references unknown tools: {missing}")
 
-    for intent in intent_candidates:
-        intent_lower = intent.lower()
+    system_prompt = render_skill_prompt(skill_name, skill_params)
 
-        if any(keyword in intent_lower for keyword in internal_task_keywords):
-            logger.info(f"Routing to executor: Internal/business task detected")
-            return "executor"
+    logger.info(f"Creating skill executor for '{skill_name}' with tools: {tool_names}")
 
-        if any(keyword in intent_lower for keyword in web_research_keywords):
-            logger.info(f"Routing to research_agent: Web research task detected")
-            return "research_agent"
-
-        if (' vs ' in intent_lower or ' versus ' in intent_lower or
-                'compare' in intent_lower or 'comparison' in intent_lower):
-            if not any(keyword in intent_lower for keyword in internal_task_keywords):
-                logger.info(f"Routing to research_agent: Comparison task detected")
-                return "research_agent"
-
-    logger.info(f"Routing to executor: Default routing for non-research task")
-    return "executor"
+    return create_react_agent(
+        model=get_llm_by_type(AGENT_LLM_MAP["skill_executor"]),
+        tools=tools,
+        prompt=system_prompt,
+    )
 
 
 def create_react_agent_from_config(agent_name: str, agent_type: str, tools: list):
