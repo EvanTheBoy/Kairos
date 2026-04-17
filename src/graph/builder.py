@@ -28,13 +28,25 @@ def human_feedback_node(state: AgentState) -> AgentState:
         logger.warning("No candidates to choose from.")
         return state
 
+    choices = [Choice(value=c, name=c['description']) for c in candidates]
+    choices.append(Choice(value='none', name='以上都不合适，重新生成'))
+
     selected = inquirer.select(
         message="Please select a task to execute:",
-        choices=[Choice(value=c, name=c['description']) for c in candidates]
+        choices=choices
     ).execute()
 
-    state['skill_spec'] = selected
-    state['selected_task'] = selected['description']
+    if selected == 'none':
+        rejection_reason = inquirer.text(
+            message="请描述你的需求或说明为何不合适："
+        ).execute()
+        state['user_rejection_feedback'] = rejection_reason
+        state['skill_spec'] = None
+    else:
+        state['skill_spec'] = selected
+        state['selected_task'] = selected['description']
+        state['user_rejection_feedback'] = None
+
     return state
 
 
@@ -76,17 +88,10 @@ def skill_executor_node(state: AgentState) -> AgentState:
     skill_params = skill_spec.get('params', {})
     logger.info(f"Executing skill '{skill_name}': {skill_spec.get('description')}")
 
-    # Normalise messages for Gemini compatibility:
-    # - Convert LangChain message objects to plain dicts
-    # - Ensure at least one user message exists (Gemini requires it)
-    normalised = []
-    for msg in state.get('messages', []):
-        if isinstance(msg, dict):
-            normalised.append(msg)
-        elif hasattr(msg, 'role') and hasattr(msg, 'content'):
-            normalised.append({'role': msg.role, 'content': msg.content})
-    if not any(m.get('role') == 'user' for m in normalised):
-        normalised.append({'role': 'user', 'content': 'Please proceed with the task.'})
+    # Each skill execution starts with a clean message history so previous
+    # tasks' tool calls don't pollute the new ReAct context.
+    # Gemini requires at least one user message, so we seed one.
+    normalised = [{'role': 'user', 'content': 'Please proceed with the task.'}]
 
     try:
         agent = create_skill_executor(skill_name, skill_params)

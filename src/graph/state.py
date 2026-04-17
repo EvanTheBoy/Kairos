@@ -37,3 +37,6 @@ class AgentState(TypedDict):
 
     # A list of messages for communication between agents - initialize as empty list
     messages: List[Any]
+
+    # User's rejection reason when they decline all strategist candidates
+    user_rejection_feedback: Optional[str]
