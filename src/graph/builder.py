@@ -213,7 +213,11 @@ def build_graph():
     )
 
     builder.add_edge("strategist", "human_feedback")
-    builder.add_edge("human_feedback", "task_orchestrator")
+    builder.add_conditional_edges(
+        "human_feedback",
+        lambda state: "task_orchestrator" if state.get('skill_spec') else "strategist",
+        {"task_orchestrator": "task_orchestrator", "strategist": "strategist"}
+    )
 
     builder.add_conditional_edges(
         "task_orchestrator",

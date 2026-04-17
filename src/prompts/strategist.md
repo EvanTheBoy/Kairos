@@ -7,6 +7,12 @@ Current context captured from the user's environment:
 - {{ context.summary }}
 {% endfor %}
 
+{% if user_rejection_feedback %}
+**USER REJECTED ALL PREVIOUS PROPOSALS**
+The user found none of the previous candidates suitable. You MUST generate completely different proposals that address their concern.
+Reason: "{{ user_rejection_feedback }}"
+{% endif %}
+
 {% if final_feedback and final_feedback != 'accept' %}
 **USER FEEDBACK**
 The user was not satisfied with the previous result. You MUST address this feedback in your new proposals.
