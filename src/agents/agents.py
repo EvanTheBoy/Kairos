@@ -60,7 +60,11 @@ def create_event_aggregator_node():
             else:
                 logger.info("Event is not significant.")
         except json.JSONDecodeError:
-            logger.error(f"Event Aggregator output was not valid JSON: {response_content}")
+            logger.warning(json.dumps({
+                "event": "json_parse_failed",
+                "agent": "event_aggregator",
+                "raw_length": len(response_content),
+            }))
             state['is_significant_event'] = False
         return state
 
@@ -88,7 +92,11 @@ def create_strategist_node():
             state['intent_candidates'] = candidates
             logger.info(f"Strategist proposed {len(candidates)} candidate(s)")
         except json.JSONDecodeError:
-            logger.error(f"Strategist output was not valid JSON: {response_content}")
+            logger.warning(json.dumps({
+                "event": "json_parse_failed",
+                "agent": "strategist",
+                "raw_length": len(response_content),
+            }))
             state['intent_candidates'] = []
         return state
 
