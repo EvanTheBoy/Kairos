@@ -7,6 +7,7 @@ import requests
 from typing import List, Dict, Optional
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from src.llms.llm import get_llm_by_type
 
 logger = logging.getLogger(__name__)
@@ -21,10 +22,19 @@ class WebContentExtractor:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
+    @retry(
+        retry=retry_if_exception_type(requests.Timeout),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=4),
+        reraise=True,
+    )
+    def _do_request(self, url: str) -> requests.Response:
+        return self.session.get(url, timeout=15)
+
     def fetch_content(self, url: str) -> Dict[str, str]:
         """Fetch and extract content from a URL."""
         try:
-            response = self.session.get(url, timeout=15)
+            response = self._do_request(url)
             response.raise_for_status()
 
             from bs4 import BeautifulSoup
@@ -66,14 +76,15 @@ class WebContentExtractor:
                 'status': 'success'
             }
 
+        except requests.Timeout:
+            logger.error(f"Timeout fetching {url} after retries")
+            return {'title': url, 'content': 'Request timed out after retries', 'url': url, 'status': 'error'}
+        except requests.HTTPError as e:
+            logger.error(f"HTTP {e.response.status_code} fetching {url}")
+            return {'title': url, 'content': f'HTTP {e.response.status_code}', 'url': url, 'status': 'error'}
         except Exception as e:
             logger.error(f"Error extracting content from {url}: {e}")
-            return {
-                'title': f"Error: {url}",
-                'content': f"Failed to extract content: {str(e)}",
-                'url': url,
-                'status': 'error'
-            }
+            return {'title': url, 'content': f'Failed to extract content: {e}', 'url': url, 'status': 'error'}
 
 
 class SearchEngine:
@@ -242,6 +253,13 @@ def fetch_webpage_content(url: str) -> str:
     try:
         content_data = extractor.fetch_content(url)
 
+        logger.info(json.dumps({
+            "event": "tool_fetch_completed",
+            "url": url,
+            "status": content_data['status'],
+            "error_reason": content_data['content'][:100] if content_data['status'] == 'error' else None,
+        }))
+
         if content_data['status'] == 'error':
             return f"Error fetching {url}: {content_data['content']}"
 
@@ -269,6 +287,12 @@ def search_web_information(query: str, max_results: int = 5) -> str:
     try:
         results = search_engine.search(query, max_results)
 
+        logger.info(json.dumps({
+            "event": "tool_search_completed",
+            "query": query,
+            "result_count": len(results),
+        }))
+
         if not results:
             return f"No search results found for: {query}"
 
@@ -284,7 +308,12 @@ def search_web_information(query: str, max_results: int = 5) -> str:
 
         return "\n".join(formatted_results)
     except Exception as e:
-        logger.error(f"Error in search_web_information: {e}")
+        logger.error(json.dumps({
+            "event": "tool_search_completed",
+            "query": query,
+            "result_count": -1,
+            "error": str(e),
+        }))
         return f"Error performing web search: {str(e)}"
 
 

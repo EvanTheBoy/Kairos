@@ -78,6 +78,8 @@ def task_orchestrator_node(state: AgentState) -> AgentState:
 
 
 def skill_executor_node(state: AgentState) -> AgentState:
+    import time, json as _json
+
     skill_spec = state.get('skill_spec')
     if not skill_spec:
         logger.error("skill_executor_node called with no skill_spec in state")
@@ -93,9 +95,16 @@ def skill_executor_node(state: AgentState) -> AgentState:
     # Gemini requires at least one user message, so we seed one.
     normalised = [{'role': 'user', 'content': 'Please proceed with the task.'}]
 
+    start_time = time.time()
+    success = False
+    error_type = None
+
     try:
         agent = create_skill_executor(skill_name, skill_params)
-        result_state = agent.invoke({**state, 'messages': normalised})
+        result_state = agent.invoke(
+            {**state, 'messages': normalised},
+            config={"recursion_limit": 25}
+        )
 
         messages = result_state.get('messages', [])
         last = messages[-1] if messages else None
@@ -103,13 +112,24 @@ def skill_executor_node(state: AgentState) -> AgentState:
 
         state['messages'] = messages
         state['task_result'] = task_result
-        logger.info(f"Skill '{skill_name}' completed. Result: {len(str(task_result))} chars")
+        success = True
 
     except Exception as e:
+        error_type = type(e).__name__
         logger.error(f"Skill '{skill_name}' failed: {e}")
         error_msg = f'ERROR: Skill execution failed: {str(e)}'
         state['messages'] = [{'role': 'assistant', 'content': error_msg}]
         state['task_result'] = error_msg
+
+    finally:
+        logger.info(_json.dumps({
+            "event": "skill_execution_completed",
+            "skill": skill_name,
+            "success": success,
+            "error_type": error_type,
+            "duration_ms": int((time.time() - start_time) * 1000),
+            "result_chars": len(str(state.get('task_result', ''))),
+        }))
 
     state['skill_spec'] = None
     state['selected_task'] = None
