@@ -70,9 +70,6 @@ def human_feedback_node(state: AgentState) -> AgentState:
 def task_orchestrator_node(state: AgentState) -> AgentState:
     logger.info("Orchestrating task...")
 
-    if 'approved_tasks' not in state:
-        state['approved_tasks'] = []
-
     # Entered from two places:
     # 1. From human_feedback: skill_spec is freshly set → enqueue it.
     # 2. From skill_executor: skill_spec was cleared → pop the next one.
@@ -197,6 +194,10 @@ def final_review_node(state: AgentState) -> AgentState:
     else:
         final_result = state.get('task_result', 'No result available')
 
+    caveat = state.get('result_caveat')
+    if caveat:
+        logger.info(f"\n⚠️  Note: {caveat}")
+
     logger.info(f"\n✅ Final Result:\n{final_result}\n")
 
     feedback_action = inquirer.select(
@@ -215,6 +216,13 @@ def final_review_node(state: AgentState) -> AgentState:
     else:
         state['final_feedback'] = "accept"
 
+    return state
+
+
+def failure_notification_node(state: AgentState) -> AgentState:
+    failure_type = state.get('failure_type', 'unknown')
+    message = state.get('failure_message', 'An error occurred.')
+    logger.info(f"\n⚠️  Task could not be completed [{failure_type}]: {message}\n")
     return state
 
 
@@ -238,6 +246,16 @@ def should_continue_execution(state: AgentState) -> str:
         logger.info(f"Routing to skill_executor: '{state['skill_spec'].get('description')}'")
         return "skill_executor"
     return "final_review"
+
+
+def route_after_skill_executor(state: AgentState) -> str:
+    """Routes based on failure_type after skill execution."""
+    failure_type = state.get('failure_type')
+    if failure_type == 'fatal' or failure_type == 'not_found':
+        return "failure_notification"
+    if failure_type == 'timeout':
+        return "failure_notification"
+    return "task_orchestrator"
 
 
 def should_refine_or_end(state: AgentState) -> str:
@@ -267,6 +285,7 @@ def build_graph():
     builder.add_node("human_feedback", human_feedback_node)
     builder.add_node("task_orchestrator", task_orchestrator_node)
     builder.add_node("skill_executor", skill_executor_node)
+    builder.add_node("failure_notification", failure_notification_node)
     builder.add_node("final_review", final_review_node)
 
     # --- Add Edges ---
@@ -293,7 +312,12 @@ def build_graph():
         {"skill_executor": "skill_executor", "final_review": "final_review"}
     )
 
-    builder.add_edge("skill_executor", "task_orchestrator")
+    builder.add_conditional_edges(
+        "skill_executor",
+        route_after_skill_executor,
+        {"task_orchestrator": "task_orchestrator", "failure_notification": "failure_notification"}
+    )
+    builder.add_edge("failure_notification", END)
 
     builder.add_conditional_edges(
         "final_review",

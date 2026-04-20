@@ -25,6 +25,9 @@ desktop/package-lock.json
 # user conf
 /conf.yml
 
+# Claude Code
+CLAUDE.md
+
 ### Python template
 # Byte-compiled / optimized / DLL files
 __pycache__/
