@@ -40,3 +40,9 @@ class AgentState(TypedDict):
 
     # User's rejection reason when they decline all strategist candidates
     user_rejection_feedback: Optional[str]
+
+    # Failure tracking fields
+    failure_type: Optional[str]       # e.g. "not_found", "timeout", "partial", "fatal"
+    failure_message: Optional[str]    # human-readable error detail
+    result_caveat: Optional[str]      # disclaimer to surface when result is partial
+    retry_count: int                  # number of degraded retries attempted so far

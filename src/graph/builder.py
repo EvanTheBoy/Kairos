@@ -12,9 +12,26 @@ from src.agents.agents import (
     create_event_aggregator_node,
     create_strategist_node,
     create_skill_executor,
+    SkillNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
+
+DEGRADED_PARAMS: dict[str, dict] = {
+    "research":  {"style": "brief"},
+    "compare":   {"focus_areas": "key differences only"},
+    "write":     {"audience": "general"},
+    "analyze":   {"focus": "summary only"},
+    "code":      {"task": "minimal implementation"},
+    "generic":   {},
+}
+
+ERROR_POLICY: dict[type, dict] = {
+    SkillNotFoundError: {"failure_type": "not_found", "retry_count": 1},
+    RecursionError:     {"failure_type": "fatal",     "retry_count": 1},
+    TimeoutError:       {"failure_type": "timeout",   "retry_count": 0},
+    Exception:          {"failure_type": "fatal",     "retry_count": 1},
+}
 
 
 # ==============================================================================
@@ -52,9 +69,6 @@ def human_feedback_node(state: AgentState) -> AgentState:
 
 def task_orchestrator_node(state: AgentState) -> AgentState:
     logger.info("Orchestrating task...")
-
-    if 'approved_tasks' not in state:
-        state['approved_tasks'] = []
 
     # Entered from two places:
     # 1. From human_feedback: skill_spec is freshly set → enqueue it.
@@ -116,10 +130,41 @@ def skill_executor_node(state: AgentState) -> AgentState:
 
     except Exception as e:
         error_type = type(e).__name__
-        logger.error(f"Skill '{skill_name}' failed: {e}")
-        error_msg = f'ERROR: Skill execution failed: {str(e)}'
-        state['messages'] = [{'role': 'assistant', 'content': error_msg}]
-        state['task_result'] = error_msg
+        policy = next(
+            (v for k, v in ERROR_POLICY.items() if isinstance(e, k)),
+            {"failure_type": "fatal", "retry_count": 1},
+        )
+        state['failure_type'] = policy["failure_type"]
+        state['failure_message'] = str(e)
+        state['retry_count'] = policy["retry_count"]
+        logger.error(f"Skill '{skill_name}' failed [{state['failure_type']}]: {e}")
+        state['messages'] = [{'role': 'assistant', 'content': state['failure_message']}]
+        state['task_result'] = state['failure_message']
+
+        # Degraded retry: only for recoverable failures on first attempt
+        if state['retry_count'] < 1:
+            degraded = {**skill_params, **DEGRADED_PARAMS.get(skill_name, {})}
+            logger.info(f"Retrying '{skill_name}' with degraded params: {degraded}")
+            try:
+                agent = create_skill_executor(skill_name, degraded)
+                result_state = agent.invoke(
+                    {**state, 'messages': normalised},
+                    config={"recursion_limit": 25}
+                )
+                messages = result_state.get('messages', [])
+                last = messages[-1] if messages else None
+                state['messages'] = messages
+                state['task_result'] = getattr(last, 'content', str(last)) if last else 'No result'
+                state['failure_type'] = None
+                state['failure_message'] = None
+                state['result_caveat'] = "Result generated with degraded parameters due to an initial failure."
+                success = True
+                error_type = None
+            except Exception as retry_e:
+                logger.error(f"Degraded retry for '{skill_name}' also failed: {retry_e}")
+                state['failure_message'] = str(retry_e)
+            finally:
+                state['retry_count'] += 1
 
     finally:
         logger.info(_json.dumps({
@@ -149,6 +194,10 @@ def final_review_node(state: AgentState) -> AgentState:
     else:
         final_result = state.get('task_result', 'No result available')
 
+    caveat = state.get('result_caveat')
+    if caveat:
+        logger.info(f"\n⚠️  Note: {caveat}")
+
     logger.info(f"\n✅ Final Result:\n{final_result}\n")
 
     feedback_action = inquirer.select(
@@ -167,6 +216,13 @@ def final_review_node(state: AgentState) -> AgentState:
     else:
         state['final_feedback'] = "accept"
 
+    return state
+
+
+def failure_notification_node(state: AgentState) -> AgentState:
+    failure_type = state.get('failure_type', 'unknown')
+    message = state.get('failure_message', 'An error occurred.')
+    logger.info(f"\n⚠️  Task could not be completed [{failure_type}]: {message}\n")
     return state
 
 
@@ -190,6 +246,16 @@ def should_continue_execution(state: AgentState) -> str:
         logger.info(f"Routing to skill_executor: '{state['skill_spec'].get('description')}'")
         return "skill_executor"
     return "final_review"
+
+
+def route_after_skill_executor(state: AgentState) -> str:
+    """Routes based on failure_type after skill execution."""
+    failure_type = state.get('failure_type')
+    if failure_type == 'fatal' or failure_type == 'not_found':
+        return "failure_notification"
+    if failure_type == 'timeout':
+        return "failure_notification"
+    return "task_orchestrator"
 
 
 def should_refine_or_end(state: AgentState) -> str:
@@ -219,6 +285,7 @@ def build_graph():
     builder.add_node("human_feedback", human_feedback_node)
     builder.add_node("task_orchestrator", task_orchestrator_node)
     builder.add_node("skill_executor", skill_executor_node)
+    builder.add_node("failure_notification", failure_notification_node)
     builder.add_node("final_review", final_review_node)
 
     # --- Add Edges ---
@@ -245,7 +312,12 @@ def build_graph():
         {"skill_executor": "skill_executor", "final_review": "final_review"}
     )
 
-    builder.add_edge("skill_executor", "task_orchestrator")
+    builder.add_conditional_edges(
+        "skill_executor",
+        route_after_skill_executor,
+        {"task_orchestrator": "task_orchestrator", "failure_notification": "failure_notification"}
+    )
+    builder.add_edge("failure_notification", END)
 
     builder.add_conditional_edges(
         "final_review",

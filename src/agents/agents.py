@@ -105,6 +105,10 @@ def create_strategist_node():
 
 
 
+class SkillNotFoundError(KeyError):
+    """Raised when a requested skill is not registered in SkillRegistry."""
+
+
 def _build_tool_registry() -> dict:
     """
     Returns a mapping of tool name → tool object for all tools available in Kairos.
@@ -149,6 +153,9 @@ def create_skill_executor(skill_name: str, skill_params: dict):
         A compiled ReAct agent ready to be invoked with an AgentState.
     """
     logger = logging.getLogger(__name__)
+
+    if SkillRegistry.get(skill_name) is None:
+        raise SkillNotFoundError(f"Skill '{skill_name}' is not registered in SkillRegistry")
 
     tool_names = SkillRegistry.get_tools(skill_name)
     all_tools = _build_tool_registry()
